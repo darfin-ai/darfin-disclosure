@@ -99,3 +99,27 @@ class DartDocumentResponse(BaseModel):
     success: bool
     text: str | None = None
     errorMessage: str | None = None
+
+
+# =====================================================================
+# 용어사전 스키마 — 용어 마스터 데이터는 app/data/dictionary_terms.json 파일로 관리한다.
+# Spring이 공시 원문을 이 서비스로 보내면, 등록된 용어를 찾아 위치와 함께 돌려준다.
+# =====================================================================
+
+class GlossaryRequest(BaseModel):
+    originalText: str  # 용어를 찾을 공시 원문 평문
+
+
+class GlossaryTermHighlight(BaseModel):
+    termId: int
+    term: str
+    category: str
+    definition: str  # raw_definition 전문
+    startIndex: int
+    endIndex: int
+
+
+class GlossaryResponse(BaseModel):
+    success: bool
+    terms: list[GlossaryTermHighlight] = []
+    errorMessage: str | None = None

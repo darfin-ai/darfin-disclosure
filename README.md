@@ -1,6 +1,6 @@
 # Darfin LLM Pipeline Service
 
-DART(전자공시시스템) 공시 문서를 수집하고, Gemini로 요약·분석하는 FastAPI 서비스입니다.
+DART(전자공시시스템) 공시 문서를 수집하고, Gemini로 요약·분석하고, 전문용어를 하이라이트하는 FastAPI 서비스입니다.
 Spring Boot 백엔드가 이 서비스를 HTTP로 호출해 결과를 받아가는 구조이며, 이 서비스는 **DB를 전혀 모릅니다**.
 DB 저장(UPSERT), `risk_tier` 등 값 정규화는 전부 Spring(JPA) 쪽 책임이고, 이 서비스는 다음만 담당합니다.
 
@@ -8,6 +8,7 @@ DB 저장(UPSERT), `risk_tier` 등 값 정규화는 전부 Spring(JPA) 쪽 책�
 2. 공시 원문 압축(토큰 절약)
 3. Gemini 호출 및 JSON 파싱
 4. 결과를 그대로 JSON으로 반환
+5. 공시 원문에서 용어사전(`app/data/dictionary_terms.json`) 매칭 및 위치 반환
 
 ## 디렉터리 구조
 
@@ -24,6 +25,9 @@ darfin-disclosure/
 │   ├── services.py          # 요약/분석 실행 로직 (run_summary, run_analysis)
 │   ├── gemini_client.py      # Gemini API 단일 호출 지점 (재시도/타임아웃 처리)
 │   ├── dart_collector.py     # DART Open API 호출 + 공시 원문 XML -> 평문 변환
+│   ├── glossary.py           # 용어사전 매칭 로직 (extract_term_highlights)
+│   ├── data/
+│   │   └── dictionary_terms.json  # 용어 마스터 데이터(용어/카테고리/정의/출처). 추가·수정은 이 파일을 직접 편집
 │   │
 │   └── pipelines/           # 공시유형(type_code)별 압축 기준 + 프롬프트 모듈
 │       ├── business_report.py       # BIZ_REPORT      정기공시(사업/반기/분기보고서)
@@ -62,6 +66,7 @@ DART 공시는 사업보고서 하나가 아니라 **90개+ 유형**이 있습�
 | GET | `/dart/document/{rcept_no}/zip` | 공시 원문 ZIP 파일 스트리밍 다운로드 |
 | POST | `/llm/summary` | typeCode에 맞는 압축 후 Gemini 요약 호출 |
 | POST | `/llm/analysis` | typeCode에 맞는 좌표보존 압축 후 Gemini 분석 호출 |
+| POST | `/glossary/terms` | 공시 원문에서 용어사전에 등록된 전문용어를 찾아 위치와 함께 반환 |
 | GET | `/llm/registered-types` | registry.py에 등록된 typeCode 목록 |
 | GET | `/dart/debug/list` | DART list.json 원본 응답 디버그용 |
 | GET | `/health` | 헬스체크 |

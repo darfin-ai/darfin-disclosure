@@ -1,8 +1,10 @@
 """
 Darfin LLM Pipeline Service.
 
-역할: 압축 + Gemini 호출 + JSON 응답. 이게 전부다.
-이 서비스는 DB를 전혀 모른다(SQLAlchemy도, 어떤 DB 드라이버도 사용하지 않음).
+역할: 압축 + Gemini 호출/JSON 응답, DART 원문 수집, 용어사전 매칭. 이게 전부다.
+이 서비스는 (Gemini 호출용 설정을 빼면) DB를 전혀 모른다(SQLAlchemy도, 어떤 DB
+드라이버도 사용하지 않음). 용어사전 마스터 데이터조차 DB가 아니라
+app/data/dictionary_terms.json 파일로 관리한다.
 Spring Boot가 이 서비스를 호출해 JSON 응답을 받고, risk_tier 비정규화와
 DB(ai_summary_result/ai_analysis_item) 저장은 전부 Spring(JPA) 쪽에서 처리한다.
 
@@ -16,20 +18,21 @@ DART에서 가져오는 문서는 사업보고서 하나가 아니라 90개+ 공
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
-from app import dart_collector, registry
+from app import dart_collector, glossary, registry
 from config import settings
 from app.schemas import (
     AnalysisRequest, AnalysisResponse,
     DartCollectRequest, DartCollectResponse,
     DartDocumentResponse,
+    GlossaryRequest, GlossaryResponse,
     SummaryRequest, SummaryResponse,
 )
 from app.services import run_analysis, run_summary
 
 app = FastAPI(
     title="Darfin LLM Pipeline Service",
-    description="DART 공시 수집(파싱) + 압축 + Gemini 요약/분석. DB 접근 없음(Spring이 저장 담당)",
-    version="0.3.0",
+    description="DART 공시 수집(파싱) + 압축 + Gemini 요약/분석 + 용어사전. DB 접근 없음(Spring이 저장 담당)",
+    version="0.4.0",
 )
 
 
@@ -41,6 +44,17 @@ def summarize(req: SummaryRequest) -> SummaryResponse:
 @app.post("/llm/analysis", response_model=AnalysisResponse)
 def analyze(req: AnalysisRequest) -> AnalysisResponse:
     return run_analysis(req)
+
+
+@app.post("/glossary/terms", response_model=GlossaryResponse)
+def extract_glossary_terms(req: GlossaryRequest) -> GlossaryResponse:
+    """
+    공시 원문에서 app/data/dictionary_terms.json에 등록된 전문용어를 찾아
+    위치(startIndex/endIndex)와 함께 반환한다. 용어 추가/수정은 그 JSON 파일을
+    직접 편집하면 된다(DB 없음, 캐싱 없음 — 매 요청마다 다시 계산한다).
+    """
+    terms = glossary.extract_term_highlights(req.originalText)
+    return GlossaryResponse(success=True, terms=terms)
 
 
 @app.post("/dart/collect", response_model=DartCollectResponse)
