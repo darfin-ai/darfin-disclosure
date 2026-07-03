@@ -16,16 +16,15 @@ DART에서 가져오는 문서는 사업보고서 하나가 아니라 90개+ 공
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 
-import dart_collector
+from app import dart_collector, registry
 from config import settings
-import registry
-from schemas import (
+from app.schemas import (
     AnalysisRequest, AnalysisResponse,
     DartCollectRequest, DartCollectResponse,
     DartDocumentResponse,
     SummaryRequest, SummaryResponse,
 )
-from services import run_analysis, run_summary
+from app.services import run_analysis, run_summary
 
 app = FastAPI(
     title="Darfin LLM Pipeline Service",

@@ -27,7 +27,7 @@ import zipfile
 import httpx
 
 from config import settings
-from schemas import (
+from app.schemas import (
     CorpInfo,
     DartCollectRequest,
     DartCollectResponse,

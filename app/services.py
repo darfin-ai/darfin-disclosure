@@ -7,10 +7,10 @@ JSON으로 변환된 결과만 돌려준다. 저장은 전부 Spring(JPA) 책임
 typeCode가 BIZ_REPORT든 RIGHTS_OFFERING이든 그 외 새로 등록되는 어떤 유형이든
 이 함수들은 동일하게 동작한다 — 실제 분기는 registry.py가 담당한다.
 """
-import registry
+from app import registry
 from config import settings
-from gemini_client import GeminiCallError, call_gemini_json
-from schemas import (
+from app.gemini_client import GeminiCallError, call_gemini_json
+from app.schemas import (
     AnalysisItem,
     AnalysisRequest,
     AnalysisResponse,

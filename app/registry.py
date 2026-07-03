@@ -10,18 +10,18 @@ DART에서 가져오는 문서는 사업보고서 하나가 아니라 정기공�
 from dataclasses import dataclass
 from typing import Callable
 
-import abs_disclosure
-import audit_report
-import business_report
-import equity
-import exchange_disclosure
-import fund_disclosure
-import ftc_disclosure
-import generic_disclosure
-import issuance
-import major_event
-import other_disclosure
-import rights_offering
+from app.pipelines import abs_disclosure
+from app.pipelines import audit_report
+from app.pipelines import business_report
+from app.pipelines import equity
+from app.pipelines import exchange_disclosure
+from app.pipelines import fund_disclosure
+from app.pipelines import ftc_disclosure
+from app.pipelines import generic_disclosure
+from app.pipelines import issuance
+from app.pipelines import major_event
+from app.pipelines import other_disclosure
+from app.pipelines import rights_offering
 
 # 전용 모듈이 없는 type_code는 get_spec()에서 이 키로 등록된 범용 파이프라인으로 폴백한다.
 GENERIC_TYPE_CODE = "GENERIC"
