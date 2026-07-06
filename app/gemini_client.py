@@ -32,6 +32,7 @@ class GeminiResult:
     tokens_in: int | None
     tokens_out: int | None
     latency_ms: int
+    truncated: bool = False
 
 
 def call_gemini_json(
@@ -74,7 +75,21 @@ def call_gemini_json(
 
             latency_ms = int((time.monotonic() - started) * 1000)
             raw_text = (response.text or "").strip()
-            parsed = _parse_json_response(raw_text)
+
+            try:
+                parsed = _parse_json_response(raw_text)
+                truncated = False
+            except GeminiCallError:
+                # 구독 등급별 max_output_tokens 제한에 걸려 배열이 중간에 잘린 경우,
+                # 전체를 실패 처리하지 않고 완전히 닫힌 항목까지만 살려서 부분 결과로 반환한다.
+                if not _is_max_tokens_truncated(response):
+                    raise
+                salvaged = _salvage_partial_json_array(raw_text)
+                if salvaged is None:
+                    raise
+                print(f"[Gemini 응답 잘림] finish_reason=MAX_TOKENS — 완전한 항목 {len(salvaged)}개만 복구")
+                parsed = salvaged
+                truncated = True
 
             usage = getattr(response, "usage_metadata", None)
             tokens_in = getattr(usage, "prompt_token_count", None) if usage else None
@@ -85,6 +100,7 @@ def call_gemini_json(
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 latency_ms=latency_ms,
+                truncated=truncated,
             )
 
         except Exception as exc:
@@ -99,6 +115,67 @@ def call_gemini_json(
             raise GeminiCallError(f"Gemini 호출 실패: {exc}") from exc
 
     raise GeminiCallError(f"Gemini 최대 재시도({_MAX_RETRIES}회) 초과: {last_exc}")
+
+
+def _is_max_tokens_truncated(response: Any) -> bool:
+    """candidates[0].finish_reason이 MAX_TOKENS인지 확인한다(응답이 토큰 한도로 잘렸는지)."""
+    candidates = getattr(response, "candidates", None) or []
+    if not candidates:
+        return False
+    finish_reason = getattr(candidates[0], "finish_reason", None)
+    return finish_reason is not None and "MAX_TOKENS" in str(finish_reason)
+
+
+def _salvage_partial_json_array(raw_text: str) -> list[Any] | None:
+    """
+    Gemini 응답이 JSON 배열 중간에 잘렸을 때, 마지막으로 완전히 닫힌 최상위
+    객체까지만 잘라내 유효한 배열로 복구한다. 배열이 아니거나 완전한 객체가
+    하나도 없으면 None을 반환한다(호출 측에서 원래 에러를 그대로 던지게 함).
+    """
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:]
+        text = text.strip()
+
+    if not text.startswith("["):
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    last_complete_end: int | None = None
+
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+            # depth == 1 -> 배열([) 바로 안쪽에서 항목({...})이 완전히 닫힌 지점
+            if ch == "}" and depth == 1:
+                last_complete_end = i + 1
+
+    if last_complete_end is None:
+        return None
+
+    try:
+        result = json.loads(text[:last_complete_end] + "]")
+    except json.JSONDecodeError:
+        return None
+
+    return result if isinstance(result, list) else None
 
 
 def _parse_json_response(raw_text: str) -> Any:

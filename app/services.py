@@ -165,6 +165,7 @@ def run_analysis(req: AnalysisRequest) -> AnalysisResponse:
         success=True,
         items=items,
         droppedCount=dropped,
+        truncated=result.truncated,
         tokensIn=result.tokens_in,
         tokensOut=result.tokens_out,
         latencyMs=result.latency_ms,

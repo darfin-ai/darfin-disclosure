@@ -44,6 +44,7 @@ class AnalysisResponse(BaseModel):
     success: bool
     items: list[AnalysisItem] | None = None
     droppedCount: int = 0
+    truncated: bool = False  # max_output_tokens 한도로 응답이 잘려 일부 항목만 복구됐는지
     tokensIn: int | None = None
     tokensOut: int | None = None
     latencyMs: int | None = None
