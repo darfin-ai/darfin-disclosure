@@ -377,9 +377,21 @@ def fetch_document_zip(rcept_no: str) -> bytes:
 
 
 def fetch_document_text(rcept_no: str) -> str:
+    """하위호환용 — 평문만 필요한 호출부를 위해 fetch_document()의 text만 반환한다."""
+    text, _blocks = fetch_document(rcept_no)
+    return text
+
+
+def fetch_document(rcept_no: str) -> tuple[str, list[dict]]:
     """
     GET https://opendart.fss.or.kr/api/document.xml?crtfc_key=...&rcept_no=...
-    공시 원문(ZIP 안의 XML 1개 이상)을 받아 태그를 제거한 평문으로 변환해 반환한다.
+    공시 원문(ZIP 안의 XML 1개 이상)을 받아 (평문, 구조화 블록 목록)으로 변환해 반환한다.
+
+    text: 태그를 제거한 평문. 요약/분석 압축 입력과 하이라이트 charOffset 계산 기준이 되는
+          기존 좌표계를 그대로 유지한다(하위호환).
+    blocks: 문단/표 단위로 구조화한 목록. 표는 "셀 | 셀" 평문 대신 실제 행/열(rows)로 내려줘서
+          프론트가 <table>로 그릴 수 있게 한다. 각 블록의 charStart/charEnd는 위 text 안에서
+          그 블록이 차지하는 문자 구간이라 기존 하이라이트 offset과 그대로 맞물린다.
 
     사내망/VPN 환경에서는 DART 서버 연결이 가끔 일시적으로 느려지거나 끊기는 경우가 있어
     (WinError 10060 등 연결 타임아웃), 한 번 더 재시도한다.
@@ -399,18 +411,45 @@ def fetch_document_text(rcept_no: str) -> str:
             raise RuntimeError("DART document.xml 응답을 파싱할 수 없습니다.")
         raise RuntimeError(f"DART document.xml 오류: status={data.get('status')}, message={data.get('message')}")
 
-    texts: list[str] = []
+    file_texts: list[str] = []
+    file_blocks: list[list[dict]] = []
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         for name in sorted(zf.namelist()):
-            texts.append(_xml_to_readable_text(zf.read(name)))
+            t, b = _xml_to_text_and_blocks(zf.read(name))
+            file_texts.append(t)
+            file_blocks.append(b)
 
-    return "\n\n".join(t for t in texts if t.strip())
+    # 파일이 여러 개면 기존과 동일하게 "\n\n"으로 이어붙이되, 앞선 파일들의 누적 길이만큼
+    # 각 파일의 블록 offset을 shift해서 전체 text 좌표계에 맞춘다.
+    parts: list[str] = []
+    blocks: list[dict] = []
+    offset = 0
+    for t, b in zip(file_texts, file_blocks):
+        if not t.strip():
+            continue
+        if parts:
+            offset += 2  # "\n\n" 구분자
+        for blk in b:
+            shifted = dict(blk)
+            if shifted.get("charStart") is not None:
+                shifted["charStart"] += offset
+                shifted["charEnd"] += offset
+            blocks.append(shifted)
+        parts.append(t)
+        offset += len(t)
+
+    text = "\n\n".join(parts)
+    return text, blocks
 
 
 # 문단/표 구분 없이 모든 태그를 공백 하나로 뭉개면 화면에서 읽기 어려워서,
-# ElementTree로 구조를 따라가며 문단은 줄바꿈으로, 표는 "셀 | 셀" 형태의 행으로 풀어준다.
-def _xml_to_readable_text(xml_bytes: bytes) -> str:
-    """DART 공시 원문 XML(HWP 변환 산출물)을 사람이 읽기 좋은 평문으로 변환한다."""
+# ElementTree로 구조를 따라가며 문단은 줄바꿈으로, 표는 행/열 구조로 풀어준다.
+def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
+    """
+    DART 공시 원문 XML(HWP 변환 산출물)을 (평문, 구조화 블록 목록)으로 변환한다.
+    평문은 기존 _xml_to_readable_text와 동일한 규칙(공백 정리 포함)으로 만들어 하위호환을 유지하고,
+    블록은 그 평문 안에서 자신이 차지하는 위치(charStart/charEnd)를 순차 탐색으로 복원해 붙인다.
+    """
     try:
         raw = xml_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -419,24 +458,29 @@ def _xml_to_readable_text(xml_bytes: bytes) -> str:
     try:
         root = ET.fromstring(raw)
     except ET.ParseError:
-        return _strip_tags_fallback(raw)
+        fallback = _strip_tags_fallback(raw)
+        blocks = [{"type": "paragraph", "text": fallback, "charStart": 0, "charEnd": len(fallback)}] if fallback else []
+        return fallback, blocks
 
-    blocks: list[str] = []
+    raw_blocks: list[dict] = []  # {"type": "paragraph", "text": ...} | {"type": "table", "rows": ...}
 
-    def render_table(table_el) -> str:
-        rows: list[str] = []
+    def render_table_rows(table_el) -> list[list[str]]:
+        rows: list[list[str]] = []
         for tr in table_el.iter():
             if (tr.tag or "").upper() != "TR":
                 continue
+            # 셀 내부의 연속 공백/탭을 하나로 정리한다 — 아래 block_plain_text가 만드는
+            # 평문(text)에도 동일한 정규화(re.sub(r"[ \t]+", " ", ...))가 적용되므로,
+            # 여기서 미리 맞춰두지 않으면 표 안 셀의 charStart/charEnd가 프론트에서 어긋난다.
             cells = [
-                "".join(cell.itertext()).strip()
+                re.sub(r"[ \t]+", " ", "".join(cell.itertext())).strip()
                 for cell in tr
                 if (cell.tag or "").upper() in ("TD", "TU", "TE")
             ]
             cells = [c for c in cells if c]
             if cells:
-                rows.append(" | ".join(cells))
-        return "\n".join(rows)
+                rows.append(cells)
+        return rows
 
     # 사용자에게 보여줄 필요가 없는 태그 — 내용째 건너뜀
     _SKIP_TAGS = {"STYLE", "SCRIPT", "HEAD", "META", "LINK"}
@@ -448,27 +492,54 @@ def _xml_to_readable_text(xml_bytes: bytes) -> str:
             return  # CSS·JS·메타 태그는 내용 포함 통째로 무시
 
         if tag == "TABLE":
-            table_text = render_table(el)
-            if table_text:
-                blocks.append(table_text)
+            rows = render_table_rows(el)
+            if rows:
+                raw_blocks.append({"type": "table", "rows": rows})
             return  # 표 내부는 더 내려가지 않는다(중복 렌더 방지)
 
         own_text = (el.text or "").strip()
         if own_text:
-            blocks.append(own_text)
+            raw_blocks.append({"type": "paragraph", "text": own_text})
 
         for child in el:
             walk(child)
             tail = (child.tail or "").strip()
             if tail:
-                blocks.append(tail)
+                raw_blocks.append({"type": "paragraph", "text": tail})
 
     walk(root)
 
-    text = "\n\n".join(b for b in blocks if b)
+    def block_plain_text(b: dict) -> str:
+        if b["type"] == "table":
+            return "\n".join(" | ".join(row) for row in b["rows"])
+        return b["text"]
+
+    plain_parts = [block_plain_text(b) for b in raw_blocks]
+    text = "\n\n".join(p for p in plain_parts if p)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    text = text.strip()
+
+    blocks: list[dict] = []
+    search_from = 0
+    for b in raw_blocks:
+        plain = block_plain_text(b)
+        normalized = re.sub(r"[ \t]+", " ", plain).strip()
+        if not normalized:
+            continue
+
+        idx = text.find(normalized, search_from)
+        char_start = char_end = None
+        if idx != -1:
+            char_start, char_end = idx, idx + len(normalized)
+            search_from = char_end
+
+        if b["type"] == "table":
+            blocks.append({"type": "table", "rows": b["rows"], "charStart": char_start, "charEnd": char_end})
+        else:
+            blocks.append({"type": "paragraph", "text": normalized, "charStart": char_start, "charEnd": char_end})
+
+    return text, blocks
 
 
 def _strip_tags_fallback(text: str) -> str:

@@ -90,14 +90,31 @@ class DartCollectResponse(BaseModel):
     errorMessage: str | None = None
 
 
+class DocumentBlock(BaseModel):
+    """
+    공시 원문을 문단/표 단위로 구조화한 블록 하나.
+    charStart/charEnd는 `text`(평문) 안에서 이 블록이 차지하는 문자 구간이며,
+    기존 하이라이트 offset(analysisItems.charOffsetStart/End, termHighlights.startIndex/endIndex)과
+    동일한 좌표계를 공유한다 — 프론트가 표 안에서도 하이라이트 구간을 매핑할 수 있게 하기 위함.
+    offset을 복원하지 못한 블록은 charStart/charEnd가 None이며, 구조 표시에는 쓰이지만 하이라이트 대상에서는 제외된다.
+    """
+    type: str  # "paragraph" | "table"
+    text: str | None = None            # type == "paragraph"
+    rows: list[list[str]] | None = None  # type == "table"
+    charStart: int | None = None
+    charEnd: int | None = None
+
+
 class DartDocumentResponse(BaseModel):
     """
     GET /dart/document/{rcept_no} 응답.
     DART document.xml(ZIP)을 받아 태그를 제거한 평문을 돌려준다.
-    이 text가 화면의 "공시 원문" 탭에 표시되고, 그대로 압축->요약/압축->분석의 입력(dartContext/dartFullText)이 된다.
+    이 text가 그대로 압축->요약/압축->분석의 입력(dartContext/dartFullText)과 하이라이트 offset 계산 기준이 된다.
+    blocks는 같은 내용을 문단/표 단위로 구조화한 것으로, 화면의 "공시 원문" 탭에서 표를 실제 표 형태로 그리는 데 쓰인다.
     """
     success: bool
     text: str | None = None
+    blocks: list[DocumentBlock] | None = None
     errorMessage: str | None = None
 
 

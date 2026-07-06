@@ -73,14 +73,14 @@ def get_document(rcept_no: str) -> DartDocumentResponse:
     DisclosureViewer.jsx 좌측 "공시 원문" 탭, 그리고 요약/분석 압축 단계 입력으로 그대로 쓰인다.
     """
     try:
-        text = dart_collector.fetch_document_text(rcept_no)
+        text, blocks = dart_collector.fetch_document(rcept_no)
     except Exception as exc:
         return DartDocumentResponse(success=False, errorMessage=f"공시 원문 조회 실패: {exc}")
 
     if not text.strip():
         return DartDocumentResponse(success=False, errorMessage="원문 텍스트를 추출하지 못했습니다.")
 
-    return DartDocumentResponse(success=True, text=text)
+    return DartDocumentResponse(success=True, text=text, blocks=blocks)
 
 
 @app.get("/dart/document/{rcept_no}/zip")
