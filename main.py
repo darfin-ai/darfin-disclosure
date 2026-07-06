@@ -13,7 +13,7 @@ DART에서 가져오는 문서는 사업보고서 하나가 아니라 90개+ 공
 묶음을 선택해서 실행한다. 새 유형을 추가하려면 registry.py를 참고하라.
 
 실행:
-    uvicorn main:app --host 127.0.0.1 --port 8001
+    uvicorn main:app --host 127.0.0.1 --port 8002
 """
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse

@@ -25,6 +25,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 import httpx
+from lxml import etree as LET
 
 from config import settings
 from app.schemas import (
@@ -455,38 +456,56 @@ def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
     except UnicodeDecodeError:
         raw = xml_bytes.decode("cp949", errors="ignore")
 
-    try:
-        root = ET.fromstring(raw)
-    except ET.ParseError:
+    # DART의 HWP→XML 변환 산출물은 "&"나 "<"가 이스케이프되지 않은 채 텍스트에 그대로
+    # 들어있는 경우가 흔하다(예: "S&P", "D&M Holdings", "3(전)기<별도재무제표>"). 표준
+    # xml.etree.ElementTree는 이런 문서를 통째로 파싱 실패 처리해서 구조를 다 잃어버리므로,
+    # libxml2 기반 lxml의 관용(recover) 모드로 어긋난 부분만 건너뛰고 최대한 복구한다.
+    #
+    # 거래소 조회공시류(예: "장래사업ㆍ경영계획")는 DART 고유 스키마가 아니라 KRX가 만드는
+    # 순수 HTML 폼 원문을 그대로 내려준다 — 이건 우리가 선택할 수 있는 게 아니라 DART가
+    # 실제로 그렇게 준다. XML recover 모드는 <br>처럼 HTML의 "빈 태그"(닫지 않아도 되는
+    # 태그) 관례를 모르기 때문에 <br> 뒤를 어디서 닫아야 할지 잘못 추측해서, 뒤따라오는
+    # 형제 행(<tr>)들이 그 셀 안으로 통째로 삼켜지는 오염이 생겼다(직접 대조 확인함).
+    # 그래서 HTML 문서는 <br>/<img> 같은 빈 태그를 제대로 아는 전용 HTMLParser로 보낸다.
+    body_stripped = raw.lstrip()
+    is_html_doc = bool(re.match(r"<!doctype\s+html|<html[\s>]", body_stripped, re.IGNORECASE))
+
+    if is_html_doc:
+        parser = LET.HTMLParser(recover=True)
+        root = LET.fromstring(raw, parser=parser)
+    else:
+        xml_decl_stripped = re.sub(r"^\s*<\?xml[^>]*\?>", "", raw, count=1)
+        parser = LET.XMLParser(recover=True)
+        try:
+            root = LET.fromstring(xml_decl_stripped, parser=parser)
+        except LET.XMLSyntaxError:
+            root = None
+
+    if root is None:
         fallback = _strip_tags_fallback(raw)
         blocks = [{"type": "paragraph", "text": fallback, "charStart": 0, "charEnd": len(fallback)}] if fallback else []
         return fallback, blocks
 
-    raw_blocks: list[dict] = []  # {"type": "paragraph", "text": ...} | {"type": "table", "rows": ...}
-
-    def render_table_rows(table_el) -> list[list[str]]:
-        rows: list[list[str]] = []
-        for tr in table_el.iter():
-            if (tr.tag or "").upper() != "TR":
-                continue
-            # 셀 내부의 연속 공백/탭을 하나로 정리한다 — 아래 block_plain_text가 만드는
-            # 평문(text)에도 동일한 정규화(re.sub(r"[ \t]+", " ", ...))가 적용되므로,
-            # 여기서 미리 맞춰두지 않으면 표 안 셀의 charStart/charEnd가 프론트에서 어긋난다.
-            cells = [
-                re.sub(r"[ \t]+", " ", "".join(cell.itertext())).strip()
-                for cell in tr
-                if (cell.tag or "").upper() in ("TD", "TU", "TE")
-            ]
-            cells = [c for c in cells if c]
-            if cells:
-                rows.append(cells)
-        return rows
+    def tag_of(el) -> str:
+        # 주석/처리명령(PI) 노드는 tag가 문자열이 아니라 콜러블이라 upper() 호출 시 죽는다.
+        return el.tag.upper() if isinstance(el.tag, str) else ""
 
     # 사용자에게 보여줄 필요가 없는 태그 — 내용째 건너뜀
     _SKIP_TAGS = {"STYLE", "SCRIPT", "HEAD", "META", "LINK"}
 
-    def walk(el) -> None:
-        tag = (el.tag or "").upper()
+    def walk_into(el, target: list[dict]) -> None:
+        """el의 내용을 target 리스트에 블록으로 쌓는다. 표 셀 안에서도 그대로 재사용되므로
+        (build_cell_blocks) 표 안에 또 표가 중첩된 경우(예: 사업보고서 각주의 종속기업 현황
+        스케줄)도 문자열로 뭉개지 않고 실제 중첩 표로 재귀 처리된다."""
+        if not isinstance(el.tag, str):
+            # XML 주석(<!-- -->)·처리명령 노드 — Xalan 계열 변환기가 남긴
+            # "<!--?javax.xml.transform.disable-output-escaping?-->" 같은 직렬화 힌트가
+            # 주석으로 문서에 그대로 남아있는 경우가 있다. lxml에서 주석 노드의 .text는 그
+            # 주석 내용 자체를 돌려주므로, 걸러내지 않으면 화면에 그대로 새어나온다.
+            # (주석 바로 뒤에 이어지는 진짜 본문은 부모 루프의 tail 처리로 그대로 잡힌다.)
+            return
+
+        tag = tag_of(el)
 
         if tag in _SKIP_TAGS:
             return  # CSS·JS·메타 태그는 내용 포함 통째로 무시
@@ -494,24 +513,79 @@ def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
         if tag == "TABLE":
             rows = render_table_rows(el)
             if rows:
-                raw_blocks.append({"type": "table", "rows": rows})
+                target.append({"type": "table", "rows": rows})
             return  # 표 내부는 더 내려가지 않는다(중복 렌더 방지)
 
         own_text = (el.text or "").strip()
         if own_text:
-            raw_blocks.append({"type": "paragraph", "text": own_text})
+            target.append({"type": "paragraph", "text": own_text})
 
         for child in el:
-            walk(child)
+            walk_into(child, target)
             tail = (child.tail or "").strip()
             if tail:
-                raw_blocks.append({"type": "paragraph", "text": tail})
+                target.append({"type": "paragraph", "text": tail})
 
-    walk(root)
+    def build_cell_blocks(cell_el) -> list[dict]:
+        """표 셀 하나의 내용을 문서 본문과 동일한 규칙(walk_into)으로 블록화한다.
+        보통은 문단 블록 하나뿐이지만, 셀 안에 표가 중첩돼 있으면 표 블록도 섞여 나온다."""
+        blocks: list[dict] = []
+        walk_into(cell_el, blocks)
+        return blocks
 
+    def span_int(el, attr: str) -> int:
+        # DART 원문의 재무제표/실적표는 ROWSPAN/COLSPAN을 자주 쓴다(예: "매출액"이 당해실적/
+        # 누계실적 두 행에 걸쳐 한 번만 표시됨). 이걸 무시하고 매 행을 <td> 개수 그대로 나열하면
+        # 행마다 칸 수가 달라져서 표가 어긋나 보인다 — 그래서 원문 속성값을 그대로 보존해
+        # 프론트가 실제 <td rowSpan>/<td colSpan>으로 그리게 한다.
+        # DART 고유 XML은 대문자(ROWSPAN), 거래소 HTML 폼(카테고리 I)은 소문자(rowspan)를 쓴다.
+        raw_val = el.get(attr.upper()) or el.get(attr.lower())
+        try:
+            n = int(raw_val)
+            return n if n > 0 else 1
+        except (TypeError, ValueError):
+            return 1
+
+    def render_table_rows(table_el) -> list[list[dict]]:
+        rows: list[list[dict]] = []
+        for tr in table_el.iter():
+            if tag_of(tr) != "TR":
+                continue
+            cells = [
+                {
+                    "rowSpan": span_int(cell, "ROWSPAN"),
+                    "colSpan": span_int(cell, "COLSPAN"),
+                    "blocks": build_cell_blocks(cell),
+                }
+                for cell in tr
+                if tag_of(cell) in ("TD", "TU", "TE", "TH")
+            ]
+            cells = [c for c in cells if c["blocks"]]
+            if cells:
+                rows.append(cells)
+        return rows
+
+    # DOCUMENT-NAME/FORMULA-VERSION/COMPANY-NAME/SUMMARY 등은 <BODY> 앞에 오는 문서
+    # 메타데이터(색인/서식버전 정보)라 실제 DART 뷰어 화면에는 나오지 않는다. <BODY>가
+    # 있으면 그 안쪽만 훑어서 이 메타데이터가 본문 문단으로 새는 걸 막는다. <BODY>/<body>가
+    # 없는 (드문) 포맷은 하위호환을 위해 루트 전체를 훑는다. recover 모드로 복구된 트리는
+    # <body>가 루트 바로 아래가 아닐 수도 있어 전체를 훑어(iter) 찾는다.
+    raw_blocks: list[dict] = []
+    body_el = next((el for el in root.iter() if tag_of(el) == "BODY"), None)
+    walk_into(body_el if body_el is not None else root, raw_blocks)
+
+    # 셀이 이제 문자열이 아니라 (재귀적으로 중첩 가능한) 블록 목록이라, 평문 직렬화도
+    # 재귀로 만든다. 셀 안 블록들은 "\n"으로, 셀들은 " | "로, 행들은 "\n"으로 잇는다.
     def block_plain_text(b: dict) -> str:
         if b["type"] == "table":
-            return "\n".join(" | ".join(row) for row in b["rows"])
+            row_lines = []
+            for row in b["rows"]:
+                cell_texts = [
+                    "\n".join(t for t in (block_plain_text(cb) for cb in cell["blocks"]) if t)
+                    for cell in row
+                ]
+                row_lines.append(" | ".join(cell_texts))
+            return "\n".join(row_lines)
         return b["text"]
 
     plain_parts = [block_plain_text(b) for b in raw_blocks]
@@ -520,24 +594,42 @@ def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()
 
-    blocks: list[dict] = []
-    search_from = 0
-    for b in raw_blocks:
-        plain = block_plain_text(b)
-        normalized = re.sub(r"[ \t]+", " ", plain).strip()
-        if not normalized:
-            continue
+    # raw_blocks를 text 안의 위치(charStart/charEnd)와 함께 다시 훑는다. 표는 자기 범위
+    # 전체를 먼저 찾아 커서를 그 끝으로 넘긴 뒤(형제 블록 탐색용), 셀 내부는 표 시작 지점부터
+    # 별도 커서로 재귀 탐색한다 — 그래야 중첩된 표/문단도 같은 좌표계 안에서 정확히 잡힌다.
+    def assign_offsets(raw: list[dict], cursor: list[int]) -> list[dict]:
+        result: list[dict] = []
+        for b in raw:
+            plain = block_plain_text(b)
+            normalized = re.sub(r"[ \t]+", " ", plain).strip()
+            if not normalized:
+                continue
 
-        idx = text.find(normalized, search_from)
-        char_start = char_end = None
-        if idx != -1:
-            char_start, char_end = idx, idx + len(normalized)
-            search_from = char_end
+            idx = text.find(normalized, cursor[0])
+            char_start = char_end = None
+            if idx != -1:
+                char_start, char_end = idx, idx + len(normalized)
+                cursor[0] = char_end
 
-        if b["type"] == "table":
-            blocks.append({"type": "table", "rows": b["rows"], "charStart": char_start, "charEnd": char_end})
-        else:
-            blocks.append({"type": "paragraph", "text": normalized, "charStart": char_start, "charEnd": char_end})
+            if b["type"] == "table":
+                inner_cursor = [char_start if char_start is not None else cursor[0]]
+                rows = [
+                    [
+                        {
+                            "rowSpan": cell["rowSpan"],
+                            "colSpan": cell["colSpan"],
+                            "blocks": assign_offsets(cell["blocks"], inner_cursor),
+                        }
+                        for cell in row
+                    ]
+                    for row in b["rows"]
+                ]
+                result.append({"type": "table", "rows": rows, "charStart": char_start, "charEnd": char_end})
+            else:
+                result.append({"type": "paragraph", "text": normalized, "charStart": char_start, "charEnd": char_end})
+        return result
+
+    blocks = assign_offsets(raw_blocks, [0])
 
     return text, blocks
 

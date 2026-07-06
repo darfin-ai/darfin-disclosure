@@ -90,6 +90,18 @@ class DartCollectResponse(BaseModel):
     errorMessage: str | None = None
 
 
+class TableCell(BaseModel):
+    """
+    표 셀 하나. rowSpan/colSpan은 DART 원문의 ROWSPAN/COLSPAN 속성을 그대로 보존한 값
+    (기본값 1)이다 — 재무제표/실적표처럼 "매출액"이 당해실적·누계실적 두 행에 걸쳐 한 번만
+    표시되는 경우를 무시하면 행마다 칸 수가 달라져 표가 어긋나 보이므로, 원문 병합 구조를
+    그대로 <td rowSpan>/<td colSpan>으로 그릴 수 있게 프론트에 전달한다.
+    """
+    rowSpan: int = 1
+    colSpan: int = 1
+    blocks: list["DocumentBlock"]
+
+
 class DocumentBlock(BaseModel):
     """
     공시 원문을 문단/표 단위로 구조화한 블록 하나.
@@ -97,12 +109,20 @@ class DocumentBlock(BaseModel):
     기존 하이라이트 offset(analysisItems.charOffsetStart/End, termHighlights.startIndex/endIndex)과
     동일한 좌표계를 공유한다 — 프론트가 표 안에서도 하이라이트 구간을 매핑할 수 있게 하기 위함.
     offset을 복원하지 못한 블록은 charStart/charEnd가 None이며, 구조 표시에는 쓰이지만 하이라이트 대상에서는 제외된다.
+
+    표 셀은 문자열이 아니라 TableCell(rowSpan/colSpan + DocumentBlock 목록)이다 — 사업/분기보고서
+    각주처럼 표 안에 또 표가 중첩된 경우(예: 종속기업 현황 스케줄)를 문자열로 뭉개지 않고 실제
+    중첩 표로 표현하기 위함이다. 보통은 문단 블록 하나짜리 목록이다.
     """
     type: str  # "paragraph" | "table"
-    text: str | None = None            # type == "paragraph"
-    rows: list[list[str]] | None = None  # type == "table"
+    text: str | None = None                    # type == "paragraph"
+    rows: list[list[TableCell]] | None = None  # type == "table" (row -> cell)
     charStart: int | None = None
     charEnd: int | None = None
+
+
+DocumentBlock.model_rebuild()
+TableCell.model_rebuild()
 
 
 class DartDocumentResponse(BaseModel):

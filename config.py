@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     dart_api_key: str = ""
 
     app_host: str = "127.0.0.1"
-    app_port: int = 8001
+    app_port: int = 8002
 
 
 settings = Settings()

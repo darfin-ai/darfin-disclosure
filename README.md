@@ -80,7 +80,7 @@ pip install -r requirements.txt
 
 # .env에 DART_API_KEY, GEMINI_API_KEY 확인/설정
 
-uvicorn main:app --host 127.0.0.1 --port 8001
+uvicorn main:app --host 127.0.0.1 --port 8002
 ```
 
 `config.py`는 프로세스 실행 위치(현재 디렉터리) 기준으로 `.env`를 읽으므로, 반드시 저장소 루트에서
