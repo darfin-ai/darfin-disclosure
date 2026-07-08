@@ -445,6 +445,44 @@ def fetch_document(rcept_no: str) -> tuple[str, list[dict]]:
 
 # 문단/표 구분 없이 모든 태그를 공백 하나로 뭉개면 화면에서 읽기 어려워서,
 # ElementTree로 구조를 따라가며 문단은 줄바꿈으로, 표는 행/열 구조로 풀어준다.
+# ── 제목(heading) 감지 ────────────────────────────────────────────
+# DART 고유 XML은 <TITLE> 태그로 장/절 제목을 명시한다. 반면 거래소 HTML 폼 등 TITLE이
+# 없는 문서는 "I.", "1.", "가." 같은 번호 패턴 + 짧은 줄로 제목을 흉내낸다. 두 신호를 모두
+# heading 블록(level 포함)으로 승격해서, 프론트가 문서 위계와 목차(TOC)를 그릴 수 있게 한다.
+_HEADING_TAGS = {"TITLE", "SUBTITLE"}
+
+# 번호 패턴 -> 레벨(1=장, 2=절, 3=항). 위에서부터 먼저 매칭되는 규칙을 따른다.
+_HEADING_LEVEL_RULES: list[tuple[re.Pattern, int]] = [
+    (re.compile(r"^제\s*\d+\s*[장편]\b"), 1),
+    (re.compile(r"^(?:[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+|[IVX]{1,4})\s*[.．]\s*\S"), 1),  # I. II. …
+    (re.compile(r"^제\s*\d+\s*[절관]\b"), 2),
+    (re.compile(r"^제\s*\d+\s*조\b"), 2),
+    (re.compile(r"^\d{1,2}\s*[.．]\s*\S"), 2),                          # 1. 2. …
+    (re.compile(r"^[가-힣]\s*[.．]\s*\S"), 3),                          # 가. 나. …
+    (re.compile(r"^\(?\d{1,2}\)\s*\S"), 3),                            # (1) 1) …
+]
+
+
+def _heading_level(text: str) -> int | None:
+    """번호 패턴으로 제목 레벨(1~3)을 추정한다. 매칭이 없으면 None."""
+    for pattern, level in _HEADING_LEVEL_RULES:
+        if pattern.match(text):
+            return level
+    return None
+
+
+def _looks_like_heading(text: str) -> int | None:
+    """<TITLE> 태그가 없는 문서(거래소 HTML 폼 등)용 휴리스틱 제목 판정.
+    오검출을 줄이기 위해 (1) 한 줄이고 (2) 충분히 짧고 (3) 서술형 종결('~다.')이 아닐 때만,
+    그리고 번호 패턴이 있을 때만 제목으로 승격한다. 조건이 하나라도 어긋나면 일반 문단으로 둔다."""
+    t = text.strip()
+    if not t or "\n" in t or len(t) > 40:
+        return None
+    if t.endswith("다.") or t.endswith("다"):  # 서술형 문장으로 보이면 제외
+        return None
+    return _heading_level(t)
+
+
 def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
     """
     DART 공시 원문 XML(HWP 변환 산출물)을 (평문, 구조화 블록 목록)으로 변환한다.
@@ -493,10 +531,22 @@ def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
     # 사용자에게 보여줄 필요가 없는 태그 — 내용째 건너뜀
     _SKIP_TAGS = {"STYLE", "SCRIPT", "HEAD", "META", "LINK"}
 
-    def walk_into(el, target: list[dict]) -> None:
+    def walk_into(el, target: list[dict], allow_headings: bool = True) -> None:
         """el의 내용을 target 리스트에 블록으로 쌓는다. 표 셀 안에서도 그대로 재사용되므로
         (build_cell_blocks) 표 안에 또 표가 중첩된 경우(예: 사업보고서 각주의 종속기업 현황
-        스케줄)도 문자열로 뭉개지 않고 실제 중첩 표로 재귀 처리된다."""
+        스케줄)도 문자열로 뭉개지 않고 실제 중첩 표로 재귀 처리된다.
+
+        allow_headings=False이면 제목 승격을 하지 않는다 — 표 셀 안의 "가.", "1." 같은 항목명이
+        본문 제목으로 오인되지 않도록, 셀 내부(build_cell_blocks)에서는 항상 꺼둔다."""
+
+        def emit_text(s: str) -> None:
+            # 본문에서만 제목 승격을 시도하고, 그 외에는 일반 문단으로 쌓는다.
+            lvl = _looks_like_heading(s) if allow_headings else None
+            if lvl:
+                target.append({"type": "heading", "text": s, "level": lvl})
+            else:
+                target.append({"type": "paragraph", "text": s})
+
         if not isinstance(el.tag, str):
             # XML 주석(<!-- -->)·처리명령 노드 — Xalan 계열 변환기가 남긴
             # "<!--?javax.xml.transform.disable-output-escaping?-->" 같은 직렬화 힌트가
@@ -516,21 +566,29 @@ def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
                 target.append({"type": "table", "rows": rows})
             return  # 표 내부는 더 내려가지 않는다(중복 렌더 방지)
 
+        if allow_headings and tag in _HEADING_TAGS:
+            # DART 고유 XML의 명시적 제목 태그. 인라인 자식이 있을 수 있어 전체 텍스트를 모은다.
+            htext = re.sub(r"\s+", " ", "".join(el.itertext())).strip()
+            if htext:
+                target.append({"type": "heading", "text": htext, "level": _heading_level(htext) or 2})
+            return  # 제목 내부는 더 내려가지 않는다(중복 렌더 방지)
+
         own_text = (el.text or "").strip()
         if own_text:
-            target.append({"type": "paragraph", "text": own_text})
+            emit_text(own_text)
 
         for child in el:
-            walk_into(child, target)
+            walk_into(child, target, allow_headings)
             tail = (child.tail or "").strip()
             if tail:
-                target.append({"type": "paragraph", "text": tail})
+                emit_text(tail)
 
     def build_cell_blocks(cell_el) -> list[dict]:
         """표 셀 하나의 내용을 문서 본문과 동일한 규칙(walk_into)으로 블록화한다.
-        보통은 문단 블록 하나뿐이지만, 셀 안에 표가 중첩돼 있으면 표 블록도 섞여 나온다."""
+        보통은 문단 블록 하나뿐이지만, 셀 안에 표가 중첩돼 있으면 표 블록도 섞여 나온다.
+        셀 안의 "가.", "1." 같은 항목명이 제목으로 오인되지 않도록 제목 승격은 꺼둔다."""
         blocks: list[dict] = []
-        walk_into(cell_el, blocks)
+        walk_into(cell_el, blocks, allow_headings=False)
         return blocks
 
     def span_int(el, attr: str) -> int:
@@ -626,7 +684,11 @@ def _xml_to_text_and_blocks(xml_bytes: bytes) -> tuple[str, list[dict]]:
                 ]
                 result.append({"type": "table", "rows": rows, "charStart": char_start, "charEnd": char_end})
             else:
-                result.append({"type": "paragraph", "text": normalized, "charStart": char_start, "charEnd": char_end})
+                # paragraph / heading 공통 — heading이면 level을 그대로 실어 보낸다.
+                out = {"type": b["type"], "text": normalized, "charStart": char_start, "charEnd": char_end}
+                if b.get("level") is not None:
+                    out["level"] = b["level"]
+                result.append(out)
         return result
 
     blocks = assign_offsets(raw_blocks, [0])

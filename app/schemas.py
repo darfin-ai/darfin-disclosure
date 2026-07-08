@@ -114,9 +114,14 @@ class DocumentBlock(BaseModel):
     표 셀은 문자열이 아니라 TableCell(rowSpan/colSpan + DocumentBlock 목록)이다 — 사업/분기보고서
     각주처럼 표 안에 또 표가 중첩된 경우(예: 종속기업 현황 스케줄)를 문자열로 뭉개지 않고 실제
     중첩 표로 표현하기 위함이다. 보통은 문단 블록 하나짜리 목록이다.
+
+    type == "heading"은 장/절 제목(DART 고유 XML의 <TITLE> 또는 "I."/"1."/"가." 번호 패턴)이며
+    level(1~3)로 위계를 나타낸다 — 프론트가 시각적 위계·목차(TOC)를 그리는 데 쓰인다.
+    본문 문단과 동일하게 text/charStart/charEnd를 가지므로 하이라이트 좌표계도 그대로 공유한다.
     """
-    type: str  # "paragraph" | "table"
-    text: str | None = None                    # type == "paragraph"
+    type: str  # "paragraph" | "heading" | "table"
+    text: str | None = None                    # type == "paragraph" | "heading"
+    level: int | None = None                   # type == "heading" (1=장, 2=절, 3=항)
     rows: list[list[TableCell]] | None = None  # type == "table" (row -> cell)
     charStart: int | None = None
     charEnd: int | None = None
