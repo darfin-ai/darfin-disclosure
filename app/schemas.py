@@ -91,6 +91,29 @@ class DartCollectResponse(BaseModel):
     errorMessage: str | None = None
 
 
+class TodayDisclosureItem(BaseModel):
+    """
+    회사 지정 없이 조회한 "오늘의 공시" 1건. DisclosureItem과 달리 stock 정보
+    (companyName/stockCode/marketType)를 자체적으로 들고 있다 — 여러 회사가 섞여
+    있어서 CorpInfo를 한 번만 받는 DartCollectResponse 구조를 쓸 수 없기 때문.
+    """
+    rceptNo: str
+    dartCorpCode: str
+    companyName: str
+    stockCode: str | None
+    marketType: str
+    typeCode: str
+    title: str
+    filerName: str
+    filedAt: str  # YYYY-MM-DD
+
+
+class TodayDisclosuresResponse(BaseModel):
+    success: bool
+    items: list[TodayDisclosureItem] = []
+    errorMessage: str | None = None
+
+
 class TableCell(BaseModel):
     """
     표 셀 하나. rowSpan/colSpan은 DART 원문의 ROWSPAN/COLSPAN 속성을 그대로 보존한 값

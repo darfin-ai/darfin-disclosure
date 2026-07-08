@@ -23,6 +23,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+from datetime import datetime
 
 import httpx
 from lxml import etree as LET
@@ -33,6 +34,7 @@ from app.schemas import (
     DartCollectRequest,
     DartCollectResponse,
     DisclosureItem,
+    TodayDisclosureItem,
 )
 
 import json
@@ -337,6 +339,71 @@ def _fetch_disclosure_list(
     return items
 
 
+def fetch_today_disclosures(limit: int = 6) -> list[TodayDisclosureItem]:
+    """
+    회사 지정 없이(corp_code 생략) 오늘 접수된 전체 공시를 최신순으로 가져온다.
+    list.json 응답에 corp_code/corp_name/stock_code/corp_cls가 이미 포함돼 있어서
+    _find_corp_code(기업명 검색)가 필요 없다 — DisclosureSearch.jsx 검색창 아래
+    "오늘 올라온 공시" 피드용.
+
+    DART Open API는 접수 "시각"(시:분)을 주지 않는다(rcept_dt는 날짜 8자리뿐이라
+    화면에 보이는 "16:17" 같은 시각은 여기서 만들 수 없다) — Spring이 이 응답을
+    처음 받아 DB에 저장하는 시점(disclosure.created_at)을 감지시각으로 대신 쓴다.
+    """
+    today = datetime.now().strftime("%Y%m%d")
+
+    resp = _get_with_retry(
+        f"{DART_BASE}/list.json",
+        params={
+            "crtfc_key": settings.dart_api_key,
+            "bgn_de": today,
+            "end_de": today,
+            "sort": "date",
+            "sort_mth": "desc",
+            "page_no": 1,
+            "page_count": max(limit, 20),
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    status = data.get("status")
+    if status == "013":
+        return []
+    if status != "000":
+        raise RuntimeError(f"DART list.json 오류: status={status}, message={data.get('message')}")
+
+    items: list[TodayDisclosureItem] = []
+    for row in data.get("list", [])[:limit]:
+        rcept_no = (row.get("rcept_no") or "").strip()
+        dart_corp_code = (row.get("corp_code") or "").strip()
+        if not rcept_no or not dart_corp_code:
+            continue
+
+        pblntf_ty = (row.get("pblntf_ty") or "").strip()
+        report_nm = (row.get("report_nm") or "").strip()
+        type_code = PBLNTF_TY_TO_TYPE_CODE.get(pblntf_ty) or _infer_type_code_from_title(report_nm)
+
+        corp_cls = (row.get("corp_cls") or "").strip()
+
+        items.append(
+            TodayDisclosureItem(
+                rceptNo=rcept_no,
+                dartCorpCode=dart_corp_code,
+                companyName=(row.get("corp_name") or "").strip(),
+                stockCode=(row.get("stock_code") or "").strip() or None,
+                marketType=CORP_CLS_TO_MARKET.get(corp_cls, "비상장"),
+                typeCode=type_code,
+                title=report_nm,
+                filerName=(row.get("flr_nm") or "").strip(),
+                filedAt=_parse_filed_at(row.get("rcept_dt") or ""),
+            )
+        )
+
+    return items
+
+
 def _parse_filed_at(rcept_dt: str) -> str:
     """
     DART의 rcept_dt는 "20260101123456" 또는 "20260101" 형식.
@@ -352,6 +419,38 @@ def _parse_filed_at(rcept_dt: str) -> str:
 # DisclosureViewer.jsx 좌측 "공시 원문" 탭 + 요약/분석 압축 단계의 입력(dartContext/dartFullText)
 # 둘 다 이 함수가 만드는 평문을 그대로 사용한다.
 
+def _raise_if_document_error(resp: httpx.Response) -> None:
+    """
+    document.xml이 실제 ZIP 대신 에러를 내려주는 경우를 감지해서 RuntimeError로 바꾼다.
+    DART는 이 에러를 상황에 따라 다른 모양으로 준다 — JSON({"status":..,"message":..})으로
+    올 때도 있고, content-type이 application/xml인데 본문은 <result><status>014</status>
+    <message>파일이 존재하지 않습니다.</message></result> 같은 XML로 올 때도 있다(예:
+    첨부문서가 없는 일괄신고추가서류류). ZIP은 항상 "PK"로 시작하므로, content-type을
+    믿는 대신 매직바이트로 판별해야 이 두 에러 모양을 모두 잡을 수 있다.
+    """
+    if resp.content[:2] == b"PK":
+        return
+
+    content_type = resp.headers.get("content-type", "")
+    if "json" in content_type:
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            raise RuntimeError("DART document.xml 응답을 파싱할 수 없습니다.")
+        raise RuntimeError(f"DART document.xml 오류: status={data.get('status')}, message={data.get('message')}")
+
+    try:
+        root = ET.fromstring(resp.content.decode("utf-8", errors="ignore"))
+        status = root.findtext("status")
+        message = root.findtext("message")
+        if status or message:
+            raise RuntimeError(f"DART document.xml 오류: status={status}, message={message}")
+    except ET.ParseError:
+        pass
+
+    raise RuntimeError("DART document.xml 응답을 인식할 수 없습니다(ZIP 아님).")
+
+
 def fetch_document_zip(rcept_no: str) -> bytes:
     """
     DART document.xml API에서 공시 원문 ZIP 파일을 그대로 반환한다.
@@ -363,16 +462,7 @@ def fetch_document_zip(rcept_no: str) -> bytes:
         params={"crtfc_key": settings.dart_api_key, "rcept_no": rcept_no},
     )
     resp.raise_for_status()
-
-    content_type = resp.headers.get("content-type", "")
-    if "json" in content_type:
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            raise RuntimeError("DART document.xml 응답을 파싱할 수 없습니다.")
-        raise RuntimeError(
-            f"DART document.xml 오류: status={data.get('status')}, message={data.get('message')}"
-        )
+    _raise_if_document_error(resp)
 
     return resp.content
 
@@ -402,15 +492,7 @@ def fetch_document(rcept_no: str) -> tuple[str, list[dict]]:
         params={"crtfc_key": settings.dart_api_key, "rcept_no": rcept_no},
     )
     resp.raise_for_status()
-
-    content_type = resp.headers.get("content-type", "")
-    if "json" in content_type:
-        # 정상적으로 ZIP을 못 내려주는 경우 DART는 {"status": "...", "message": "..."} JSON을 돌려준다.
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            raise RuntimeError("DART document.xml 응답을 파싱할 수 없습니다.")
-        raise RuntimeError(f"DART document.xml 오류: status={data.get('status')}, message={data.get('message')}")
+    _raise_if_document_error(resp)
 
     file_texts: list[str] = []
     file_blocks: list[list[dict]] = []

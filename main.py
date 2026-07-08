@@ -26,6 +26,7 @@ from app.schemas import (
     DartDocumentResponse,
     GlossaryRequest, GlossaryResponse,
     SummaryRequest, SummaryResponse,
+    TodayDisclosuresResponse,
 )
 from app.services import run_analysis, run_summary
 
@@ -64,6 +65,20 @@ def collect(req: DartCollectRequest) -> DartCollectResponse:
     Spring이 이 응답을 받아서 stock / disclosure 테이블에 UPSERT한다.
     """
     return dart_collector.collect(req)
+
+
+@app.get("/dart/today-disclosures", response_model=TodayDisclosuresResponse)
+def get_today_disclosures(limit: int = 6) -> TodayDisclosuresResponse:
+    """
+    회사 지정 없이 오늘 접수된 전체 공시 중 최신순 상위 N건을 반환한다.
+    DisclosureSearch.jsx 검색창 아래 "오늘 올라온 공시" 피드가 주기적으로 호출한다.
+    """
+    try:
+        items = dart_collector.fetch_today_disclosures(limit)
+    except Exception as exc:
+        return TodayDisclosuresResponse(success=False, errorMessage=f"오늘의 공시 조회 실패: {exc}")
+
+    return TodayDisclosuresResponse(success=True, items=items)
 
 
 @app.get("/dart/document/{rcept_no}", response_model=DartDocumentResponse)
