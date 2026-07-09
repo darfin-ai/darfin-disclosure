@@ -172,14 +172,16 @@ ANALYSIS_USER_PROMPT_TEMPLATE = (
     "   · 표 항목명·레이블·단어 단독 금지 (장내매도, 적정, 보유목적, 주주배정 등)\n"
     "   · 최소 20자 이상의 완전한 문장(서술어로 끝나는 문장)만 허용\n"
     "   · 원문에서 한 글자도 수정 없이 그대로 발췌.\n"
-    "4. 결과는 반드시 아래 구조의 순수한 JSON 배열 형태로만 출력하고, "
+    "4. materialImpact는 결론부터 쉬운 말로 최대 2문장으로 써라. 전문용어를 쓸 경우 "
+    "괄호로 쉬운 설명을 바로 덧붙이고, 배경 설명이나 원문 재진술로 늘리지 마라.\n"
+    "5. 결과는 반드시 아래 구조의 순수한 JSON 배열 형태로만 출력하고, "
     "마크다운 기호나 추가 텍스트를 절대 붙이지 말 것.\n\n"
     "[JSON Schema]\n"
     "[\n"
     "  {{\n"
     '    "analysisCategory": "(Enum: [Dilution_Risk, Funding_Purpose, Pricing_Fairness, Major_Shareholder_Impact])",\n'
     "   · 원문에서 한 글자도 수정 없이 그대로 발췌.\n"
-    '    "materialImpact": "(String) 해당 조건이 기존 주주 가치에 미칠 영향 분석 (3문장 이내)",\n'
+    '    "materialImpact": "(String) 결론부터 쉬운 말로, 최대 2문장",\n'
     '    "riskLevel": "(Enum: [Low, Neutral, High, Critical])"\n'
     "  }}\n"
     "]\n\n"

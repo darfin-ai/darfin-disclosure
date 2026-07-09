@@ -91,14 +91,15 @@ ANALYSIS_USER_PROMPT_TEMPLATE = (
     "제공된 공시 원문 발췌를 분석하여 투자자에게 중요한 항목을 식별하고 JSON 배열로 반환하라.\n\n"
     "[Output Guidelines]\n"
     "1. targetKey는 아래 발췌 원문에서 정확히 일치하는 문자열만 사용하라(재구성·요약 금지 — 한 글자도 다르면 안 됨).\n"
-    "2. materialImpact에는 해당 내용이 기업/투자자에게 미치는 영향을 3문장 이내로 설명하라.\n"
+    "2. materialImpact는 결론부터 쉬운 말로 최대 2문장으로 써라. 전문용어를 쓸 경우 "
+    "괄호로 쉬운 설명을 바로 덧붙이고, 배경 설명이나 원문 재진술로 늘리지 마라.\n"
     "3. 결과는 반드시 아래 구조의 순수한 JSON 배열 형태로만 출력하고, 마크다운 기호나 추가 텍스트를 붙이지 말 것.\n\n"
     "[JSON Schema]\n"
     "[\n"
     "  {{\n"
     '    "analysisCategory": "(String) 이 항목의 분류(예: Key_Fact, Risk, Opportunity, Governance)",\n'
     '    "targetKey": "(String) 원문 내 핵심 하이라이트 문장",\n'
-    '    "materialImpact": "(String) 해당 문장이 기업/투자자에 미칠 영향 분석 (3문장 이내)",\n'
+    '    "materialImpact": "(String) 결론부터 쉬운 말로, 최대 2문장",\n'
     '    "riskLevel": "(Enum: [Low, Neutral, High, Critical])"\n'
     "  }}\n"
     "]\n\n"
