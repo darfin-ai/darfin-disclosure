@@ -8,6 +8,8 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port 8002
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
       - key: PORT
         value: 8002
       - key: GEMINI_API_KEY
