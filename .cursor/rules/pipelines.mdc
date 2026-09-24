@@ -1,0 +1,29 @@
+---
+description: Disclosure FastAPI pipeline conventions
+globs: app/**
+alwaysApply: false
+---
+
+# Disclosure service conventions
+
+- Stateless: return JSON only, no DB writes
+- Registry: `type_code` → `PipelineSpec` in `app/registry.py`
+- New type: add module in `app/pipelines/`, register via `_register_simple()`
+- Fallback: unregistered types use `generic_disclosure.py`
+
+## Pipeline module interface
+
+Each pipeline exports:
+- `compress_for_summary`, `extract_analysis_chunks`, `build_analysis_input`, `resolve_offset`
+- `*_SYSTEM_INSTRUCTION`, `*_USER_PROMPT_TEMPLATE` constants
+
+## API
+
+- camelCase JSON fields (`typeCode`, `corpName`) to match Spring
+- Gemini calls only through `app/gemini_client.py`
+- Risk labels: Low / Neutral / High / Critical
+
+## Do not
+
+- Add persistence — Spring handles DB
+- Change schemas without coordinating `darfin-main` DTOs
